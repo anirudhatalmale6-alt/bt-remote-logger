@@ -55,13 +55,13 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
       KeyEvent.KEYCODE_VOLUME_UP -> {
         lastVolumeKeyTime = System.currentTimeMillis()
         cancelPendingHeart()
-        emitButton("CAMERA", "Camera button (Volume Up)")
+        emitButton("GEAR", "Gear button (Volume Up)")
         return true
       }
       KeyEvent.KEYCODE_VOLUME_DOWN -> {
         lastVolumeKeyTime = System.currentTimeMillis()
         cancelPendingHeart()
-        emitButton("GEAR", "Gear button (Volume Down)")
+        emitButton("CAMERA", "Camera button (Volume Down)")
         return true
       }
       else -> {
