@@ -33,12 +33,14 @@ const BUTTON_CONFIG: Record<string, {icon: string; color: string; name: string}>
   CAMERA: {icon: '📷', color: '#FF9800', name: 'Camera'},
   GEAR: {icon: '⚙️', color: '#2196F3', name: 'Gear'},
   HEART: {icon: '❤️', color: '#E91E63', name: 'Heart / Like'},
+  DIAG: {icon: '🔧', color: '#9C27B0', name: 'Diagnostic'},
 };
 
 export default function App() {
   const [events, setEvents] = useState<ButtonEvent[]>([]);
   const [isActive, setIsActive] = useState(false);
   const [lastButton, setLastButton] = useState<string | null>(null);
+  const [diagInfo, setDiagInfo] = useState<string>('');
   const eventCounter = useRef(0);
   const flashAnim = useRef(new Animated.Value(0)).current;
 
@@ -88,7 +90,31 @@ export default function App() {
   const handleClear = () => {
     setEvents([]);
     setLastButton(null);
+    setDiagInfo('');
     eventCounter.current = 0;
+  };
+
+  const handleDiagnostics = async () => {
+    if (!KeyEventListener?.getDiagnostics) {
+      setDiagInfo('getDiagnostics not available');
+      return;
+    }
+    try {
+      const d = await KeyEventListener.getDiagnostics();
+      const lines = [
+        `Window: ${d.windowClass}`,
+        `EventWindow: ${d.eventWindowActive ? 'YES' : 'NO'}`,
+        `Volume monitor: ${d.volumeMonitorActive ? 'YES' : 'NO'}`,
+        `Volume: ${(d.currentVolume * 100).toFixed(0)}%`,
+        `Controllers: ${d.connectedControllers}`,
+        `Module: ${d.moduleActive ? 'active' : 'inactive'}`,
+        `Listeners: ${d.hasListeners ? 'YES' : 'NO'}`,
+        `Events: send=${d.sendEventCount} press=${d.pressEventCount} touch=${d.touchEventCount}`,
+      ];
+      setDiagInfo(lines.join('\n'));
+    } catch (e: any) {
+      setDiagInfo(`Error: ${e.message}`);
+    }
   };
 
   const formatTime = (ts: number): string => {
@@ -191,7 +217,18 @@ export default function App() {
         <TouchableOpacity style={styles.buttonClear} onPress={handleClear}>
           <Text style={styles.buttonText}>Clear</Text>
         </TouchableOpacity>
+        {Platform.OS === 'ios' && (
+          <TouchableOpacity style={[styles.buttonClear, {backgroundColor: '#4a148c'}]} onPress={handleDiagnostics}>
+            <Text style={styles.buttonText}>Status</Text>
+          </TouchableOpacity>
+        )}
       </View>
+
+      {diagInfo ? (
+        <View style={styles.diagBox}>
+          <Text style={styles.diagText}>{diagInfo}</Text>
+        </View>
+      ) : null}
 
       <FlatList
         data={events}
@@ -272,6 +309,8 @@ const styles = StyleSheet.create({
   eventTime: {color: '#555', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'},
   emptyState: {paddingVertical: 30, alignItems: 'center'},
   emptyText: {color: '#444', fontSize: 13},
+  diagBox: {marginHorizontal: 20, marginVertical: 6, padding: 10, backgroundColor: '#1a0a2e', borderRadius: 8, borderWidth: 1, borderColor: '#4a148c'},
+  diagText: {color: '#ce93d8', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16},
   footer: {paddingVertical: 6, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#1a1a30'},
   footerText: {color: '#333', fontSize: 10},
 });

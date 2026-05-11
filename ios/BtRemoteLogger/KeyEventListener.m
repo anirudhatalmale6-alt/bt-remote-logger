@@ -1,4 +1,5 @@
 #import "KeyEventListener.h"
+#import "EventWindow.h"
 #import <AVFoundation/AVFoundation.h>
 #import <GameController/GameController.h>
 
@@ -59,6 +60,24 @@ RCT_EXPORT_METHOD(startListening) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [self setupVolumeMonitoring];
     [self setupGameController];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (self->_hasListeners && self->_isListening) {
+        UIWindow *keyWindow = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        keyWindow = UIApplication.sharedApplication.keyWindow;
+#pragma clang diagnostic pop
+        BOOL isEW = [keyWindow isKindOfClass:[EventWindow class]];
+        NSString *msg = isEW ? @"EventWindow active" : [NSString stringWithFormat:@"Window: %@", NSStringFromClass([keyWindow class])];
+
+        [self sendEventWithName:@"onButtonDetected" body:@{
+          @"buttonId": @"DIAG",
+          @"label": msg,
+          @"timestamp": @([[NSDate date] timeIntervalSince1970] * 1000)
+        }];
+      }
+    });
   });
 }
 
@@ -75,6 +94,47 @@ RCT_EXPORT_METHOD(addListener:(NSString *)eventName) {
 }
 
 RCT_EXPORT_METHOD(removeListeners:(double)count) {
+}
+
+RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIWindow *keyWindow = nil;
+    if (@available(iOS 15.0, *)) {
+      for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+          for (UIWindow *w in scene.windows) {
+            if (w.isKeyWindow) { keyWindow = w; break; }
+          }
+        }
+        if (keyWindow) break;
+      }
+    }
+    if (!keyWindow) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      keyWindow = UIApplication.sharedApplication.keyWindow;
+#pragma clang diagnostic pop
+    }
+
+    NSString *windowClass = keyWindow ? NSStringFromClass([keyWindow class]) : @"nil";
+    BOOL isEventWindow = [keyWindow isKindOfClass:[EventWindow class]];
+    NSArray *controllers = [GCController controllers];
+    float volume = [AVAudioSession sharedInstance].outputVolume;
+
+    resolve(@{
+      @"windowClass": windowClass,
+      @"eventWindowActive": @(isEventWindow),
+      @"volumeMonitorActive": @(self->_volumeObserverActive),
+      @"currentVolume": @(volume),
+      @"connectedControllers": @(controllers.count),
+      @"moduleActive": @(self->_isListening),
+      @"hasListeners": @(self->_hasListeners),
+      @"sendEventCount": @([EventWindow sendEventCount]),
+      @"pressEventCount": @([EventWindow pressEventCount]),
+      @"touchEventCount": @([EventWindow touchEventCount]),
+    });
+  });
 }
 
 #pragma mark - Cooldown
