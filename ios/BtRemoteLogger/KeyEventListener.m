@@ -90,11 +90,7 @@ RCT_EXPORT_METHOD(stopListening) {
   [self teardownVolumeMonitoring];
 }
 
-RCT_EXPORT_METHOD(addListener:(NSString *)eventName) {
-}
 
-RCT_EXPORT_METHOD(removeListeners:(double)count) {
-}
 
 RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
