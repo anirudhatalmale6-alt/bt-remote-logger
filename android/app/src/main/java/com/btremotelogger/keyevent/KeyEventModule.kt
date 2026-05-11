@@ -23,13 +23,16 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
   private var hoverLastY = 0f
   private var isTracking = false
 
-  // Deferred detection: volume key and mouse click may arrive in either order
   private var pendingVolumeKey = false
   private var pendingClick = false
   private var pendingRunnable: Runnable? = null
   private val DETECT_WINDOW_MS = 400L
 
   private val SWIPE_THRESHOLD = 100f
+
+  // Cooldown: ignore events for a short period after emitting a button
+  private var lastEmitTime = 0L
+  private val COOLDOWN_MS = 600L
 
   @ReactMethod
   fun startListening() {
@@ -50,12 +53,18 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
   @ReactMethod
   fun removeListeners(count: Int) {}
 
+  private fun isInCooldown(): Boolean {
+    return System.currentTimeMillis() - lastEmitTime < COOLDOWN_MS
+  }
+
   fun handleKeyEvent(keyCode: Int, action: Int, deviceName: String): Boolean {
     if (action != KeyEvent.ACTION_DOWN) return true
 
     when (keyCode) {
       KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
-        onVolumeKeyReceived()
+        if (!isInCooldown()) {
+          onVolumeKeyReceived()
+        }
         return true
       }
       else -> {
@@ -103,74 +112,72 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     }
   }
 
-  fun handleTouchEvent(event: MotionEvent) {
-    // Consumed in MainActivity to prevent phantom taps
-  }
+  fun handleTouchEvent(event: MotionEvent) {}
 
   private fun evaluateGesture() {
+    if (isInCooldown()) return
+
     val deltaX = hoverLastX - hoverStartX
     val deltaY = hoverLastY - hoverStartY
     val absDeltaX = Math.abs(deltaX)
     val absDeltaY = Math.abs(deltaY)
 
     if (absDeltaX > SWIPE_THRESHOLD || absDeltaY > SWIPE_THRESHOLD) {
-      // Swipe = arrow button
       if (absDeltaY >= absDeltaX) {
         if (deltaY < 0) {
-          emitButton("ARROW_UP", "Arrow Up (swipe up)")
+          emitButton("ARROW_UP", "Arrow Up")
         } else {
-          emitButton("ARROW_DOWN", "Arrow Down (swipe down)")
+          emitButton("ARROW_DOWN", "Arrow Down")
         }
       } else {
         if (deltaX < 0) {
-          emitButton("ARROW_LEFT", "Arrow Left (swipe left)")
+          emitButton("ARROW_LEFT", "Arrow Left")
         } else {
-          emitButton("ARROW_RIGHT", "Arrow Right (swipe right)")
+          emitButton("ARROW_RIGHT", "Arrow Right")
         }
       }
     } else {
-      // No movement = click = Gear (if volume key) or Heart (if no volume key)
       onClickReceived()
     }
   }
 
   private fun onVolumeKeyReceived() {
     if (pendingClick) {
-      // Click already arrived, volume key confirms it's GEAR
       cancelPending()
       emitButton("GEAR", "Gear button")
     } else {
-      // No click yet - wait for one
       pendingVolumeKey = true
       schedulePendingResolve()
     }
   }
 
   private fun onClickReceived() {
+    if (isInCooldown()) return
+
     if (pendingVolumeKey) {
-      // Volume key already arrived, click confirms it's GEAR
       cancelPending()
       emitButton("GEAR", "Gear button")
     } else {
-      // No volume key yet - wait for one
       pendingClick = true
       schedulePendingResolve()
     }
   }
 
   private fun schedulePendingResolve() {
-    // Only schedule if not already scheduled
     if (pendingRunnable != null) return
 
     pendingRunnable = Runnable {
+      if (isInCooldown()) {
+        pendingVolumeKey = false
+        pendingClick = false
+        pendingRunnable = null
+        return@Runnable
+      }
       if (pendingVolumeKey && !pendingClick) {
-        // Volume key only, no click = CAMERA
         emitButton("CAMERA", "Camera button")
       } else if (pendingClick && !pendingVolumeKey) {
-        // Click only, no volume key = HEART
         emitButton("HEART", "Heart / Like button")
       } else if (pendingVolumeKey && pendingClick) {
-        // Both arrived (shouldn't get here, but just in case) = GEAR
         emitButton("GEAR", "Gear button")
       }
       pendingVolumeKey = false
@@ -190,6 +197,9 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
   }
 
   private fun emitButton(buttonId: String, label: String) {
+    lastEmitTime = System.currentTimeMillis()
+    cancelPending()
+
     val params = Arguments.createMap().apply {
       putString("buttonId", buttonId)
       putString("label", label)
@@ -200,9 +210,7 @@ class KeyEventModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
       reactApplicationContext
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
         .emit("onButtonDetected", params)
-    } catch (e: Exception) {
-      // Context may not be ready
-    }
+    } catch (e: Exception) {}
   }
 
   companion object {
