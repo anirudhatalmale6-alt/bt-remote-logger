@@ -34,14 +34,7 @@ class MainActivity : ReactActivity() {
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
     val module = KeyEventModule.instance
     if (module != null) {
-      val isExternal = event.device?.let { device ->
-        val deviceName = device.name ?: ""
-        deviceName.isNotEmpty() && deviceName != "unknown" &&
-            (event.source and InputDevice.SOURCE_MOUSE != 0 ||
-             event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE)
-      } ?: false
-
-      if (isExternal) {
+      if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
         module.handleTouchEvent(event)
         return true
       }
@@ -52,8 +45,7 @@ class MainActivity : ReactActivity() {
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
     val module = KeyEventModule.instance
     if (module != null) {
-      val deviceName = event.device?.name ?: "unknown"
-      if (deviceName.isNotEmpty() && deviceName != "unknown") {
+      if (event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
         module.handleMotionEvent(event)
         return true
       }
