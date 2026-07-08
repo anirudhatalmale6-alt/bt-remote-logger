@@ -219,7 +219,19 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
     [self emitRaw:[NSString stringWithFormat:@"VOLUME %d%% -> %d%%", (int)(oldVol*100), (int)(newVol*100)]];
     if ([self isInCooldown]) return;
 
-    [self onVolumeKeyReceived];
+    // On iOS the mouse "click" (gear/heart) never reaches us, so we can't use
+    // the volume+click pattern. Instead use volume DIRECTION:
+    //   volume UP   -> Camera
+    //   volume DOWN -> Gear
+    if (newVol > oldVol) {
+      [self emitButton:@"CAMERA" label:@"Camera button"];
+    } else if (newVol < oldVol) {
+      [self emitButton:@"GEAR" label:@"Gear button"];
+    } else {
+      // No measurable change (hit 0%/100% ceiling) — still count it as a
+      // volume key so the user isn't left with no feedback.
+      [self emitButton:@"CAMERA" label:@"Camera button (vol at limit)"];
+    }
   }
 }
 

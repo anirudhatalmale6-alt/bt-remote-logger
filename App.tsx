@@ -162,7 +162,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0d0d1a" />
       <View style={styles.header}>
         <Text style={styles.title}>BT Remote Demo</Text>
-        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.4</Text>
+        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.5</Text>
       </View>
 
       <View style={styles.statusBar}>
@@ -253,7 +253,7 @@ export default function App() {
       />
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>BT Remote Demo v3.4 | {Platform.OS.toUpperCase()}</Text>
+        <Text style={styles.footerText}>BT Remote Demo v3.5 | {Platform.OS.toUpperCase()}</Text>
       </View>
     </SafeAreaView>
   );
