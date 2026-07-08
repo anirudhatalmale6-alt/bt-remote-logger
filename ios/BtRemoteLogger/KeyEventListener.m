@@ -2,6 +2,7 @@
 #import "EventWindow.h"
 #import <AVFoundation/AVFoundation.h>
 #import <GameController/GameController.h>
+#import <MediaPlayer/MediaPlayer.h>
 
 @implementation KeyEventListener {
   BOOL _isListening;
@@ -36,6 +37,14 @@
   CGFloat _lastNetY;
 
   NSTimeInterval _lastOtherLogTime;
+
+  // Media remote control (MPRemoteCommandCenter) — for buttons that send
+  // consumer media keys (play/pause, next/prev track, etc). Requires being
+  // the "Now Playing" app, which we achieve by looping silent audio.
+  AVAudioEngine *_audioEngine;
+  AVAudioPlayerNode *_silentNode;
+  BOOL _remoteCommandsActive;
+  NSInteger _remoteCmdCount;
 }
 
 static KeyEventListener *_shared = nil;
@@ -80,6 +89,7 @@ RCT_EXPORT_METHOD(startListening) {
   dispatch_async(dispatch_get_main_queue(), ^{
     [self setupVolumeMonitoring];
     [self setupGameController];
+    [self setupRemoteCommands];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       if (self->_hasListeners && self->_isListening) {
@@ -118,6 +128,7 @@ RCT_EXPORT_METHOD(stopListening) {
   _mouseAccumX = 0;
   _mouseAccumY = 0;
   [self teardownVolumeMonitoring];
+  [self teardownRemoteCommands];
 }
 
 
@@ -172,6 +183,8 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
       @"gcKeyCount": @(self->_keyPressCount),
       @"lastNetX": @((int)self->_lastNetX),
       @"lastNetY": @((int)self->_lastNetY),
+      @"remoteCommandsActive": @(self->_remoteCommandsActive),
+      @"remoteCmdCount": @(self->_remoteCmdCount),
     });
   });
 }
@@ -189,7 +202,9 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
 
   AVAudioSession *session = [AVAudioSession sharedInstance];
   NSError *error = nil;
-  [session setCategory:AVAudioSessionCategoryAmbient error:&error];
+  // Playback category (not Ambient) so we can become the Now Playing app and
+  // receive media remote-control events. Volume KVO still works either way.
+  [session setCategory:AVAudioSessionCategoryPlayback error:&error];
   [session setActive:YES error:&error];
   _lastVolume = session.outputVolume;
 
@@ -220,12 +235,13 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
     if ([self isInCooldown]) return;
 
     // On iOS the mouse "click" (gear/heart) never reaches us, so we can't use
-    // the volume+click pattern. Instead use volume DIRECTION:
-    //   volume UP   -> Camera
-    //   volume DOWN -> Gear
-    if (newVol > oldVol) {
+    // the volume+click pattern. Instead use volume DIRECTION (confirmed by
+    // client testing):
+    //   volume DOWN -> Camera
+    //   volume UP   -> Gear
+    if (newVol < oldVol) {
       [self emitButton:@"CAMERA" label:@"Camera button"];
-    } else if (newVol < oldVol) {
+    } else if (newVol > oldVol) {
       [self emitButton:@"GEAR" label:@"Gear button"];
     } else {
       // No measurable change (hit 0%/100% ceiling) — still count it as a
@@ -233,6 +249,109 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
       [self emitButton:@"CAMERA" label:@"Camera button (vol at limit)"];
     }
   }
+}
+
+#pragma mark - Media Remote Commands
+
+// Many iOS-compatible BT remotes send consumer media keys (play/pause,
+// next/prev track, seek) for their non-volume buttons. iOS routes those to
+// the Now Playing app. We become that app by looping silent audio, then
+// register handlers for every media command and log which one each button
+// triggers.
+- (void)setupRemoteCommands {
+  if (_remoteCommandsActive) return;
+
+  [self startSilentAudio];
+
+  MPRemoteCommandCenter *cc = [MPRemoteCommandCenter sharedCommandCenter];
+
+  [self addCommand:cc.playCommand            name:@"play"];
+  [self addCommand:cc.pauseCommand           name:@"pause"];
+  [self addCommand:cc.togglePlayPauseCommand name:@"togglePlayPause"];
+  [self addCommand:cc.stopCommand            name:@"stop"];
+  [self addCommand:cc.nextTrackCommand       name:@"nextTrack"];
+  [self addCommand:cc.previousTrackCommand   name:@"previousTrack"];
+  [self addCommand:cc.seekForwardCommand     name:@"seekForward"];
+  [self addCommand:cc.seekBackwardCommand    name:@"seekBackward"];
+  [self addCommand:cc.skipForwardCommand     name:@"skipForward"];
+  [self addCommand:cc.skipBackwardCommand    name:@"skipBackward"];
+
+  _remoteCommandsActive = YES;
+}
+
+- (void)addCommand:(MPRemoteCommand *)command name:(NSString *)name {
+  command.enabled = YES;
+  __weak typeof(self) weakSelf = self;
+  [command addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *event) {
+    [weakSelf onRemoteCommand:name];
+    return MPRemoteCommandHandlerStatusSuccess;
+  }];
+}
+
+- (void)onRemoteCommand:(NSString *)name {
+  if (!_isListening || !_hasListeners) return;
+  _remoteCmdCount++;
+  [self emitRaw:[NSString stringWithFormat:@"MEDIA cmd: %@", name]];
+}
+
+- (void)startSilentAudio {
+  NSError *err = nil;
+  AVAudioSession *session = [AVAudioSession sharedInstance];
+  [session setCategory:AVAudioSessionCategoryPlayback error:&err];
+  [session setActive:YES error:&err];
+
+  _audioEngine = [[AVAudioEngine alloc] init];
+  _silentNode = [[AVAudioPlayerNode alloc] init];
+  [_audioEngine attachNode:_silentNode];
+
+  AVAudioFormat *fmt = [_audioEngine.mainMixerNode outputFormatForBus:0];
+  [_audioEngine connect:_silentNode to:_audioEngine.mainMixerNode format:fmt];
+
+  AVAudioFrameCount frames = (AVAudioFrameCount)(fmt.sampleRate * 0.5);
+  AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:fmt frameCapacity:frames];
+  if (buffer) {
+    buffer.frameLength = frames; // zero-filled buffer = silence
+
+    if ([_audioEngine startAndReturnError:&err]) {
+      [_silentNode scheduleBuffer:buffer
+                           atTime:nil
+                          options:AVAudioPlayerNodeBufferLoops
+                completionHandler:nil];
+      [_silentNode play];
+    }
+  }
+
+  // Publishing Now Playing info makes iOS treat us as the active media app,
+  // which is required to receive remote-control commands.
+  [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = @{
+    MPMediaItemPropertyTitle: @"BT Remote Listening",
+    MPNowPlayingInfoPropertyPlaybackRate: @1.0,
+  };
+}
+
+- (void)teardownRemoteCommands {
+  if (!_remoteCommandsActive) return;
+
+  MPRemoteCommandCenter *cc = [MPRemoteCommandCenter sharedCommandCenter];
+  NSArray<MPRemoteCommand *> *cmds = @[
+    cc.playCommand, cc.pauseCommand, cc.togglePlayPauseCommand, cc.stopCommand,
+    cc.nextTrackCommand, cc.previousTrackCommand, cc.seekForwardCommand,
+    cc.seekBackwardCommand, cc.skipForwardCommand, cc.skipBackwardCommand,
+  ];
+  for (MPRemoteCommand *cmd in cmds) {
+    [cmd removeTarget:nil];
+    cmd.enabled = NO;
+  }
+
+  @try {
+    [_silentNode stop];
+    [_audioEngine stop];
+  } @catch (NSException *e) {}
+  _silentNode = nil;
+  _audioEngine = nil;
+
+  [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
+  _remoteCommandsActive = NO;
 }
 
 #pragma mark - Game Controller
