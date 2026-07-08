@@ -34,6 +34,7 @@ const BUTTON_CONFIG: Record<string, {icon: string; color: string; name: string}>
   GEAR: {icon: '⚙️', color: '#2196F3', name: 'Gear'},
   HEART: {icon: '❤️', color: '#E91E63', name: 'Heart / Like'},
   DIAG: {icon: '🔧', color: '#9C27B0', name: 'Diagnostic'},
+  RAW: {icon: '🛰️', color: '#00BCD4', name: 'Raw Input'},
 };
 
 export default function App() {
@@ -137,6 +138,7 @@ export default function App() {
 
   const renderEvent = ({item}: {item: ButtonEvent}) => {
     const config = getConfig(item.buttonId);
+    const showLabel = item.label && item.label !== config.name;
     return (
       <View style={[styles.eventRow, {borderLeftColor: config.color}]}>
         <View style={styles.eventHeader}>
@@ -144,6 +146,7 @@ export default function App() {
           <Text style={[styles.eventName, {color: config.color}]}>{config.name}</Text>
           <Text style={styles.eventTime}>{formatTime(item.timestamp)}</Text>
         </View>
+        {showLabel ? <Text style={styles.eventLabel}>{item.label}</Text> : null}
       </View>
     );
   };
@@ -159,7 +162,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0d0d1a" />
       <View style={styles.header}>
         <Text style={styles.title}>BT Remote Demo</Text>
-        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.3</Text>
+        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.4</Text>
       </View>
 
       <View style={styles.statusBar}>
@@ -250,7 +253,7 @@ export default function App() {
       />
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>BT Remote Demo v3.3 | {Platform.OS.toUpperCase()}</Text>
+        <Text style={styles.footerText}>BT Remote Demo v3.4 | {Platform.OS.toUpperCase()}</Text>
       </View>
     </SafeAreaView>
   );
@@ -313,6 +316,7 @@ const styles = StyleSheet.create({
   eventTime: {color: '#555', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'},
   emptyState: {paddingVertical: 30, alignItems: 'center'},
   emptyText: {color: '#444', fontSize: 13},
+  eventLabel: {color: '#9fb0c0', fontSize: 12, marginTop: 4, marginLeft: 34, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace'},
   diagBox: {marginHorizontal: 20, marginVertical: 6, padding: 10, backgroundColor: '#1a0a2e', borderRadius: 8, borderWidth: 1, borderColor: '#4a148c'},
   diagText: {color: '#ce93d8', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16},
   footer: {paddingVertical: 6, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#1a1a30'},

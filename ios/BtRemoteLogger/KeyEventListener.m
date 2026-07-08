@@ -34,6 +34,8 @@
   NSInteger _keyPressCount;
   CGFloat _lastNetX;
   CGFloat _lastNetY;
+
+  NSTimeInterval _lastOtherLogTime;
 }
 
 static KeyEventListener *_shared = nil;
@@ -212,6 +214,9 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
                        context:(void *)context {
   if ([keyPath isEqualToString:@"outputVolume"]) {
     if (!_isListening || !_hasListeners) return;
+    float newVol = [change[NSKeyValueChangeNewKey] floatValue];
+    float oldVol = [change[NSKeyValueChangeOldKey] floatValue];
+    [self emitRaw:[NSString stringWithFormat:@"VOLUME %d%% -> %d%%", (int)(oldVol*100), (int)(newVol*100)]];
     if ([self isInCooldown]) return;
 
     [self onVolumeKeyReceived];
@@ -331,6 +336,9 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
   CGFloat absX = fabs(netX);
   CGFloat absY = fabs(netY);
 
+  // Always log the raw movement so we can see the remote IS driving the mouse.
+  [self emitRaw:[NSString stringWithFormat:@"MOUSE move dx=%d dy=%d", (int)netX, (int)netY]];
+
   if (absX < kMouseSwipeThreshold && absY < kMouseSwipeThreshold) {
     return; // too small — ignore jitter
   }
@@ -355,6 +363,7 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
 - (void)onMouseButton:(NSString *)which {
   if (!_isListening || !_hasListeners) return;
   _mouseButtonCount++;
+  [self emitRaw:[NSString stringWithFormat:@"MOUSE button: %@", which]];
   // A discrete mouse click maps to the volume+click disambiguation:
   //   click alone            -> Heart
   //   click + volume change  -> Gear
@@ -365,8 +374,9 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
 
 - (void)onKeyboardKey:(GCKeyCode)keyCode API_AVAILABLE(ios(14.0)) {
   if (!_isListening || !_hasListeners) return;
-  if ([self isInCooldown]) return;
   _keyPressCount++;
+  [self emitRaw:[NSString stringWithFormat:@"GC KEY code=%ld", (long)keyCode]];
+  if ([self isInCooldown]) return;
 
   NSString *buttonId = nil;
   NSString *label = nil;
@@ -445,6 +455,16 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
   if (!_isListening || !_hasListeners) return;
   if (![action isEqualToString:@"DOWN"] && ![action isEqualToString:@"DOWN_VIA_SEND"]) return;
 
+  if (@available(iOS 13.4, *)) {
+    if (press.key) {
+      [self emitRaw:[NSString stringWithFormat:@"UIPress key HID=%ld (%@)", (long)press.key.keyCode, action]];
+    } else {
+      [self emitRaw:[NSString stringWithFormat:@"UIPress type=%ld (%@)", (long)press.type, action]];
+    }
+  } else {
+    [self emitRaw:[NSString stringWithFormat:@"UIPress type=%ld (%@)", (long)press.type, action]];
+  }
+
   NSString *buttonId = nil;
   NSString *label = nil;
 
@@ -512,6 +532,13 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
   }
   if (!isExternalPointer && touch.type == UITouchTypeIndirect) {
     isExternalPointer = YES;
+  }
+  // Log external-pointer touches (began/ended only, to avoid flooding).
+  if (isExternalPointer &&
+      (touch.phase == UITouchPhaseBegan || touch.phase == UITouchPhaseEnded)) {
+    CGPoint p = [touch locationInView:nil];
+    [self emitRaw:[NSString stringWithFormat:@"TOUCH ptr type=%ld phase=%ld @%d,%d",
+                   (long)touch.type, (long)touch.phase, (int)p.x, (int)p.y]];
   }
   if (!isExternalPointer) return;
 
@@ -650,6 +677,29 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
     @"label": label,
     @"timestamp": @([[NSDate date] timeIntervalSince1970] * 1000)
   }];
+}
+
+// Live raw-input logger: shows exactly which channel captured an input and
+// its raw values, so a single test round reveals the true iOS mapping.
+// Not gated by cooldown — we always want to see raw activity.
+- (void)emitRaw:(NSString *)detail {
+  if (!_isListening || !_hasListeners) return;
+  [self sendEventWithName:@"onButtonDetected" body:@{
+    @"buttonId": @"RAW",
+    @"label": detail,
+    @"timestamp": @([[NSDate date] timeIntervalSince1970] * 1000)
+  }];
+}
+
+// Called from EventWindow for event types other than touches/presses
+// (hover=9, scroll=11, motion=1, remote-control=2, etc). Rate-limited
+// so pointer hover movement doesn't flood the feed.
+- (void)logOtherEventType:(NSInteger)eventType subtype:(NSInteger)subtype {
+  if (!_isListening || !_hasListeners) return;
+  NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+  if (now - _lastOtherLogTime < 0.35) return;
+  _lastOtherLogTime = now;
+  [self emitRaw:[NSString stringWithFormat:@"UIEvent type=%ld subtype=%ld", (long)eventType, (long)subtype]];
 }
 
 #pragma mark - Cleanup

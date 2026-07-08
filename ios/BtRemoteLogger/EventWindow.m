@@ -62,6 +62,12 @@ static NSInteger _touchEventCount = 0;
     }
   }
 
+  // Any other event type (hover from a pointer, scroll, motion, remote
+  // control, etc.) — log it so no input channel goes unseen.
+  if (listener && event.type != UIEventTypeTouches && event.type != UIEventTypePresses) {
+    [listener logOtherEventType:event.type subtype:event.subtype];
+  }
+
   [super sendEvent:event];
 }
 
