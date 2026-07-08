@@ -109,6 +109,10 @@ export default function App() {
         `Controllers: ${d.connectedControllers}`,
         `Module: ${d.moduleActive ? 'active' : 'inactive'}`,
         `Listeners: ${d.hasListeners ? 'YES' : 'NO'}`,
+        `Mouse: ${d.mouseConnected ? 'YES' : 'NO'} (mice=${d.connectedMice})`,
+        `Keyboard: ${d.keyboardConnected ? 'YES' : 'NO'}`,
+        `Mouse move=${d.mouseMoveCount} btn=${d.mouseButtonCount} key=${d.gcKeyCount}`,
+        `Last swipe: x=${d.lastNetX} y=${d.lastNetY}`,
         `Events: send=${d.sendEventCount} press=${d.pressEventCount} touch=${d.touchEventCount}`,
       ];
       setDiagInfo(lines.join('\n'));
@@ -155,7 +159,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0d0d1a" />
       <View style={styles.header}>
         <Text style={styles.title}>BT Remote Demo</Text>
-        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.0</Text>
+        <Text style={styles.subtitle}>Beauty-R1 Button Detector | v3.3</Text>
       </View>
 
       <View style={styles.statusBar}>
@@ -246,7 +250,7 @@ export default function App() {
       />
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>BT Remote Demo v3.0 | {Platform.OS.toUpperCase()}</Text>
+        <Text style={styles.footerText}>BT Remote Demo v3.3 | {Platform.OS.toUpperCase()}</Text>
       </View>
     </SafeAreaView>
   );

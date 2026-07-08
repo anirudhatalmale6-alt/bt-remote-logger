@@ -20,12 +20,30 @@
   NSTimer *_pendingTimer;
 
   NSTimeInterval _lastEmitTime;
+
+  // GCMouse relative-movement accumulation (arrow swipes on iOS)
+  CGFloat _mouseAccumX;
+  CGFloat _mouseAccumY;
+  NSTimer *_mouseEvalTimer;
+
+  // Diagnostics
+  BOOL _mouseConnected;
+  BOOL _keyboardConnected;
+  NSInteger _mouseMoveCount;
+  NSInteger _mouseButtonCount;
+  NSInteger _keyPressCount;
+  CGFloat _lastNetX;
+  CGFloat _lastNetY;
 }
 
 static KeyEventListener *_shared = nil;
 static CGFloat const kSwipeThreshold = 100.0;
 static NSTimeInterval const kDetectWindowSec = 0.4;
 static NSTimeInterval const kCooldownSec = 0.6;
+
+// Relative mouse movement: accumulate until motion pauses, then classify direction.
+static CGFloat const kMouseSwipeThreshold = 20.0;   // net delta to count as a swipe
+static NSTimeInterval const kMousePauseSec = 0.12;  // idle time that ends a swipe burst
 
 + (KeyEventListener *)shared {
   return _shared;
@@ -69,7 +87,13 @@ RCT_EXPORT_METHOD(startListening) {
         keyWindow = UIApplication.sharedApplication.keyWindow;
 #pragma clang diagnostic pop
         BOOL isEW = [keyWindow isKindOfClass:[EventWindow class]];
-        NSString *msg = isEW ? @"EventWindow active" : [NSString stringWithFormat:@"Window: %@", NSStringFromClass([keyWindow class])];
+        NSUInteger miceCount = 0;
+        if (@available(iOS 14.0, *)) {
+          miceCount = GCMouse.mice.count;
+        }
+        NSString *msg = [NSString stringWithFormat:@"%@ | Mice:%lu",
+                        isEW ? @"EventWindow OK" : @"No EventWindow",
+                        (unsigned long)miceCount];
 
         [self sendEventWithName:@"onButtonDetected" body:@{
           @"buttonId": @"DIAG",
@@ -87,6 +111,10 @@ RCT_EXPORT_METHOD(stopListening) {
   }
   _isListening = NO;
   [self cancelPending];
+  [_mouseEvalTimer invalidate];
+  _mouseEvalTimer = nil;
+  _mouseAccumX = 0;
+  _mouseAccumY = 0;
   [self teardownVolumeMonitoring];
 }
 
@@ -118,6 +146,11 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
     NSArray *controllers = [GCController controllers];
     float volume = [AVAudioSession sharedInstance].outputVolume;
 
+    NSUInteger miceCount = 0;
+    if (@available(iOS 14.0, *)) {
+      miceCount = GCMouse.mice.count;
+    }
+
     resolve(@{
       @"windowClass": windowClass,
       @"eventWindowActive": @(isEventWindow),
@@ -129,6 +162,14 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
       @"sendEventCount": @([EventWindow sendEventCount]),
       @"pressEventCount": @([EventWindow pressEventCount]),
       @"touchEventCount": @([EventWindow touchEventCount]),
+      @"mouseConnected": @(self->_mouseConnected),
+      @"keyboardConnected": @(self->_keyboardConnected),
+      @"connectedMice": @(miceCount),
+      @"mouseMoveCount": @(self->_mouseMoveCount),
+      @"mouseButtonCount": @(self->_mouseButtonCount),
+      @"gcKeyCount": @(self->_keyPressCount),
+      @"lastNetX": @((int)self->_lastNetX),
+      @"lastNetY": @((int)self->_lastNetY),
     });
   });
 }
@@ -188,6 +229,166 @@ RCT_EXPORT_METHOD(getDiagnostics:(RCTPromiseResolveBlock)resolve
   for (GCController *controller in [GCController controllers]) {
     [self configureController:controller];
   }
+
+  // The Beauty-R1 enumerates on iOS as a BLE HID mouse (relative pointer),
+  // not a gamepad or keyboard. GCMouse gives us its raw movement + buttons
+  // globally, regardless of focus or where the pointer is on screen.
+  if (@available(iOS 14.0, *)) {
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(mouseConnected:)
+                                                 name:GCMouseDidConnectNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(keyboardConnected:)
+                                                 name:GCKeyboardDidConnectNotification
+                                               object:nil];
+
+    if (GCMouse.current) {
+      [self configureMouse:GCMouse.current];
+    }
+    for (GCMouse *mouse in GCMouse.mice) {
+      [self configureMouse:mouse];
+    }
+    if (GCKeyboard.coalescedKeyboard) {
+      [self configureKeyboard:GCKeyboard.coalescedKeyboard];
+    }
+  }
+}
+
+- (void)mouseConnected:(NSNotification *)notification API_AVAILABLE(ios(14.0)) {
+  GCMouse *mouse = notification.object;
+  [self configureMouse:mouse];
+}
+
+- (void)keyboardConnected:(NSNotification *)notification API_AVAILABLE(ios(14.0)) {
+  GCKeyboard *keyboard = notification.object;
+  [self configureKeyboard:keyboard];
+}
+
+- (void)configureMouse:(GCMouse *)mouse API_AVAILABLE(ios(14.0)) {
+  if (!mouse) return;
+  _mouseConnected = YES;
+  __weak typeof(self) weakSelf = self;
+
+  mouse.mouseInput.mouseMovedHandler = ^(GCMouseInput *m, float deltaX, float deltaY) {
+    [weakSelf onMouseMovedDX:deltaX dY:deltaY];
+  };
+
+  mouse.mouseInput.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
+    if (pressed) [weakSelf onMouseButton:@"left"];
+  };
+  if (mouse.mouseInput.rightButton) {
+    mouse.mouseInput.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
+      if (pressed) [weakSelf onMouseButton:@"right"];
+    };
+  }
+  if (mouse.mouseInput.middleButton) {
+    mouse.mouseInput.middleButton.pressedChangedHandler = ^(GCControllerButtonInput *btn, float value, BOOL pressed) {
+      if (pressed) [weakSelf onMouseButton:@"middle"];
+    };
+  }
+}
+
+- (void)configureKeyboard:(GCKeyboard *)keyboard API_AVAILABLE(ios(14.0)) {
+  if (!keyboard || !keyboard.keyboardInput) return;
+  _keyboardConnected = YES;
+  __weak typeof(self) weakSelf = self;
+
+  keyboard.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *kb, GCControllerButtonInput *key, GCKeyCode keyCode, BOOL pressed) {
+    if (pressed) [weakSelf onKeyboardKey:keyCode];
+  };
+}
+
+#pragma mark - GCMouse Movement (arrow swipes)
+
+- (void)onMouseMovedDX:(CGFloat)dx dY:(CGFloat)dy {
+  if (!_isListening || !_hasListeners) return;
+
+  _mouseMoveCount++;
+  _mouseAccumX += dx;
+  _mouseAccumY += dy;
+
+  // Restart the pause timer on every move; when movement stops for
+  // kMousePauseSec, evaluate the accumulated net delta as one swipe.
+  [_mouseEvalTimer invalidate];
+  __weak typeof(self) weakSelf = self;
+  _mouseEvalTimer = [NSTimer scheduledTimerWithTimeInterval:kMousePauseSec
+                                                    repeats:NO
+                                                      block:^(NSTimer *timer) {
+    [weakSelf evaluateMouseSwipe];
+  }];
+}
+
+- (void)evaluateMouseSwipe {
+  CGFloat netX = _mouseAccumX;
+  CGFloat netY = _mouseAccumY;
+  _mouseAccumX = 0;
+  _mouseAccumY = 0;
+  _mouseEvalTimer = nil;
+  _lastNetX = netX;
+  _lastNetY = netY;
+
+  CGFloat absX = fabs(netX);
+  CGFloat absY = fabs(netY);
+
+  if (absX < kMouseSwipeThreshold && absY < kMouseSwipeThreshold) {
+    return; // too small — ignore jitter
+  }
+  if ([self isInCooldown]) return;
+
+  if (absY >= absX) {
+    // GCMouse convention: positive deltaY is upward movement.
+    if (netY > 0) {
+      [self emitButton:@"ARROW_UP" label:@"Arrow Up"];
+    } else {
+      [self emitButton:@"ARROW_DOWN" label:@"Arrow Down"];
+    }
+  } else {
+    if (netX > 0) {
+      [self emitButton:@"ARROW_RIGHT" label:@"Arrow Right"];
+    } else {
+      [self emitButton:@"ARROW_LEFT" label:@"Arrow Left"];
+    }
+  }
+}
+
+- (void)onMouseButton:(NSString *)which {
+  if (!_isListening || !_hasListeners) return;
+  _mouseButtonCount++;
+  // A discrete mouse click maps to the volume+click disambiguation:
+  //   click alone            -> Heart
+  //   click + volume change  -> Gear
+  [self onClickReceived];
+}
+
+#pragma mark - GCKeyboard (fallback)
+
+- (void)onKeyboardKey:(GCKeyCode)keyCode API_AVAILABLE(ios(14.0)) {
+  if (!_isListening || !_hasListeners) return;
+  if ([self isInCooldown]) return;
+  _keyPressCount++;
+
+  NSString *buttonId = nil;
+  NSString *label = nil;
+
+  if (keyCode == GCKeyCodeUpArrow) {
+    buttonId = @"ARROW_UP"; label = @"Arrow Up";
+  } else if (keyCode == GCKeyCodeDownArrow) {
+    buttonId = @"ARROW_DOWN"; label = @"Arrow Down";
+  } else if (keyCode == GCKeyCodeLeftArrow) {
+    buttonId = @"ARROW_LEFT"; label = @"Arrow Left";
+  } else if (keyCode == GCKeyCodeRightArrow) {
+    buttonId = @"ARROW_RIGHT"; label = @"Arrow Right";
+  } else if (keyCode == GCKeyCodeReturnOrEnter || keyCode == GCKeyCodeSpacebar) {
+    buttonId = @"HEART"; label = @"Heart / Like button";
+  } else if (keyCode == GCKeyCodeEscape) {
+    buttonId = @"GEAR"; label = @"Gear button";
+  } else {
+    buttonId = [NSString stringWithFormat:@"GCKEY_%ld", (long)keyCode];
+    label = [NSString stringWithFormat:@"GC Key %ld", (long)keyCode];
+  }
+
+  [self emitButton:buttonId label:label];
 }
 
 - (void)controllerConnected:(NSNotification *)notification {
